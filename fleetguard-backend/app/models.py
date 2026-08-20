@@ -68,5 +68,6 @@ class Prediction(Base):
     part_code = Column(String, ForeignKey("parts.part_code"), nullable=False)
     failure_probability_pct = Column(Float, nullable=False)
     risk_tier = Column(String, nullable=False)
+    top_signal = Column(String, nullable=True)
     rul_km = Column(Integer, nullable=False)
     computed_date = Column(Date, nullable=False)
