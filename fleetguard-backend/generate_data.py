@@ -84,16 +84,20 @@ def generate_telematics(db, vehicles, job_cards):
             failure_map[jc.vin] = []
         failure_map[jc.vin].append(jc)
         
+    # Select 15 specific vehicles to experience "Imminent Failures" this week
+    imminent_vins = [v.vin for v in vehicles[:15]]
+        
     telematics_records = []
     today = date.today()
     
     for v in vehicles:
         v_failures = failure_map.get(v.vin, [])
+        is_imminent = v.vin in imminent_vins
         
         for week_offset in range(52):
             week_date = today - timedelta(days=(week_offset * 7))
             
-            # 1. Base Normal Signals (Gaussian noise within strict bounds)
+            # 1. Base Normal Signals (Healthy)
             coolant = np.clip(np.random.normal(0.2, 0.05), 0, 1)
             oil_dips = max(0, int(np.random.normal(1, 1)))
             voltage_sag = np.clip(np.random.normal(0.1, 0.05), 0, 1)
@@ -104,19 +108,25 @@ def generate_telematics(db, vehicles, job_cards):
             short_trip = np.clip(np.random.normal(0.3, 0.1), 0, 1)
             idle = np.clip(np.random.normal(0.15, 0.05), 0, 1)
             
-            # 2. Mathematical Injection (2-4 weeks prior to failure)
+            # 2. Historical Failure Injection (Past)
             for jc in v_failures:
                 days_until_failure = (jc.failure_date - week_date).days
                 if 14 <= days_until_failure <= 28:
-                    if jc.part_code == "ALT-001": # Alternator Signals
+                    if jc.part_code == "ALT-001": 
                         voltage_sag = np.clip(np.random.normal(0.85, 0.1), 0, 1)
                         coolant = np.clip(np.random.normal(0.80, 0.1), 0, 1)
-                    elif jc.part_code == "WP-002": # Water Pump Signals
+                    elif jc.part_code == "WP-002": 
                         coolant = np.clip(np.random.normal(0.90, 0.05), 0, 1)
                         idle = np.clip(np.random.normal(0.70, 0.1), 0, 1)
-                    elif jc.part_code == "TC-003": # Turbocharger Signals
+                    elif jc.part_code == "TC-003": 
                         rpm_dwell = np.clip(np.random.normal(0.80, 0.1), 0, 1)
                         oil_dips = max(5, int(np.random.normal(15, 3)))
+                        
+            # 3. Imminent Failure Injection (Current Week)
+            # This ensures we have Red-tier vehicles for the dashboard right now
+            if is_imminent and week_offset <= 1:
+                voltage_sag = np.clip(np.random.normal(0.95, 0.05), 0, 1)
+                coolant = np.clip(np.random.normal(0.90, 0.05), 0, 1)
                         
             telematics_records.append(models.Telematics(
                 vin=v.vin, week_start_date=week_date, coolant_temp_variance=float(coolant),
@@ -126,7 +136,6 @@ def generate_telematics(db, vehicles, job_cards):
                 short_trip_ratio=float(short_trip), idle_time_pct=float(idle)
             ))
             
-        # Batch insert to manage memory
         if len(telematics_records) > 5000:
             db.add_all(telematics_records)
             db.commit()

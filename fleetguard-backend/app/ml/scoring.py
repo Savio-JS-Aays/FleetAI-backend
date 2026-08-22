@@ -5,12 +5,10 @@ from app import models
 
 def run_fleet_scoring(db: Session):
     """
-    Calculates the failure probability for the entire fleet based on active rules (P0 Requirement).
+    Calculates failure probability and RUL for the entire fleet (P0 Requirement).
     """
-    # 1. Get all unique parts that have an active rule configured
+    # 1. Fetch active rules
     active_rules = db.query(models.RuleConfig).filter(models.RuleConfig.is_included == True).all()
-    
-    # Group rules by part_code
     rules_by_part = {}
     for r in active_rules:
         if r.part_code not in rules_by_part:
@@ -18,10 +16,13 @@ def run_fleet_scoring(db: Session):
         rules_by_part[r.part_code][r.signal_name] = r.correlation_weight
 
     if not rules_by_part:
-        return 0 # No rules saved yet
+        return 0
 
-    # 2. Get the most recent telematics record for every vehicle
-    # Subquery to find the max date per VIN
+    # 2. Fetch reference dictionaries for fast O(1) lookups
+    vehicles = {v.vin: v for v in db.query(models.Vehicle).all()}
+    parts = {p.part_code: p for p in db.query(models.Part).all()}
+
+    # 3. Get the most recent telematics record for every vehicle
     subq = db.query(
         models.Telematics.vin, 
         func.max(models.Telematics.week_start_date).label('max_date')
@@ -32,31 +33,26 @@ def run_fleet_scoring(db: Session):
         (models.Telematics.vin == subq.c.vin) & (models.Telematics.week_start_date == subq.c.max_date)
     ).all()
 
-    # Clear old predictions to calculate fresh ones
+    # Clear old predictions
     db.query(models.Prediction).delete()
-
     predictions = []
     
-    # 3. Apply the formula to every vehicle
+    # 4. Apply Formulas
     for record in latest_telematics:
         for part_code, rule_weights in rules_by_part.items():
             
+            # --- Probability Calculation ---
             total_score = 0.0
             signal_contributions = {}
             
-            # Multiply live data by the saved weights
             for signal, weight in rule_weights.items():
-                # Get the value dynamically using getattr
                 live_value = getattr(record, signal, 0.0)
                 contribution = live_value * weight
-                
                 total_score += contribution
                 signal_contributions[signal] = contribution
             
-            # Convert to a clean percentage (0 to 100)
             probability_pct = min(round(total_score * 100, 2), 100.0)
             
-            # Assign Risk Tier
             if probability_pct >= 70.0:
                 tier = "Red"
             elif probability_pct >= 40.0:
@@ -64,21 +60,42 @@ def run_fleet_scoring(db: Session):
             else:
                 tier = "Green"
                 
-            # Find the top contributing signal (the one with the highest math contribution)
             top_signal = max(signal_contributions, key=signal_contributions.get) if signal_contributions else "Unknown"
 
-            # Create the prediction record
+            # --- Remaining Useful Life (RUL) Calculation ---
+            v_data = vehicles[record.vin]
+            p_data = parts[part_code]
+            
+            # Extract stress factors to accelerate wear (alpha)
+            # Normalizing these to create a multiplier between 1.0 and ~2.5
+            stress_factors = (
+                getattr(record, 'overload_duty_share', 0.0) +
+                getattr(record, 'harsh_braking_frequency', 0.0) +
+                getattr(record, 'coolant_temp_variance', 0.0)
+            )
+            alpha = 1.0 + stress_factors
+            
+            p_fail = probability_pct / 100.0
+            
+            # RUL Formula: (Design Life - Current Odometer) / (1 + (alpha * p_fail))
+            current_part_km = v_data.total_km % p_data.design_life_km
+            base_remaining_km = p_data.design_life_km - current_part_km
+            denominator = 1.0 + (alpha * p_fail)
+            raw_rul = base_remaining_km / denominator
+            
+            # Zero-Bound Handling (P0 Requirement): RUL can never be negative
+            final_rul = max(0, int(raw_rul))
+
             predictions.append(models.Prediction(
                 vin=record.vin,
                 part_code=part_code,
                 failure_probability_pct=probability_pct,
                 risk_tier=tier,
-                top_signal=top_signal, # Added this!
-                rul_km=0, 
+                top_signal=top_signal,
+                rul_km=final_rul,
                 computed_date=date.today()
             ))
 
-    # 4. Save to the database
     db.add_all(predictions)
     db.commit()
     
