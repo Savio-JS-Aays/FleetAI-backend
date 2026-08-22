@@ -4,3 +4,6 @@ sqlalchemy
 pandas
 scikit-learn
 pydantic
+google-genai
+requests
+python-dotenv
