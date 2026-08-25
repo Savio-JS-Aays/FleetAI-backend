@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app import models
 from app.ml.scoring import run_fleet_scoring
+from fastapi import HTTPException
 
 router = APIRouter(prefix="/api/predictions", tags=["Predictions"])
 
@@ -72,3 +73,70 @@ def get_probability_trend(vin: str, part_code: str, db: Session = Depends(get_db
         })
         
     return trend
+@router.get("/{vin}/signal-breakdown")
+def get_signal_breakdown(vin: str, part_code: str, db: Session = Depends(get_db)):
+    """
+    Powers the 'Which signals drive this prediction' bar chart.
+    """
+    vin = vin.upper()
+    part_code = part_code.upper()
+
+    # 1. Get the active rule weights for this part
+    active_rules = db.query(models.RuleConfig).filter(
+        models.RuleConfig.part_code == part_code, 
+        models.RuleConfig.is_included == True
+    ).all()
+    
+    if not active_rules:
+        raise HTTPException(status_code=404, detail="No active rules found for this part.")
+        
+    rule_weights = {r.signal_name: r.correlation_weight for r in active_rules}
+    
+    # 2. Get the latest week of telematics for this VIN
+    latest_telemetry = db.query(models.Telematics).filter(models.Telematics.vin == vin)\
+        .order_by(models.Telematics.week_start_date.desc()).first()
+        
+    if not latest_telemetry:
+         raise HTTPException(status_code=404, detail="No telematics found for this VIN.")
+
+    # 3. Calculate each signal's absolute mathematical contribution
+    breakdown = []
+    total_score = 0.0
+    
+    # Clean UI labels mapping
+    signal_labels = {
+        "battery_voltage_sag": "Battery voltage sag",
+        "coolant_temp_variance": "Coolant temp variance",
+        "oil_pressure_dips": "Oil pressure dips",
+        "high_rpm_dwell_time": "High-RPM dwell time",
+        "idle_time_pct": "Idle time pct",
+        "overload_duty_share": "Overload duty share",
+        "harsh_braking_frequency": "Harsh braking frequency",
+        "short_trip_ratio": "Short-trip ratio",
+        "dtc_recurrence_rate": "DTC recurrence rate"
+    }
+    
+    for signal, weight in rule_weights.items():
+        live_value = getattr(latest_telemetry, signal, 0.0)
+        contribution = live_value * weight
+        total_score += contribution
+        
+        if contribution > 0:
+            breakdown.append({
+                "signal_name": signal_labels.get(signal, signal),
+                "raw_contribution": contribution
+            })
+            
+    # 4. Normalize the contributions so the bars equal 100% of the prediction
+    formatted_breakdown = []
+    for item in breakdown:
+        pct_share = (item["raw_contribution"] / total_score) * 100 if total_score > 0 else 0
+        formatted_breakdown.append({
+            "signal_name": item["signal_name"],
+            "contribution_pct": round(pct_share, 1)
+        })
+        
+    # Sort highest contribution first
+    formatted_breakdown.sort(key=lambda x: x["contribution_pct"], reverse=True)
+    
+    return formatted_breakdown
