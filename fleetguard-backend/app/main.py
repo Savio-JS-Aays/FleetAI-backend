@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from app.database import engine
 from app import models
-from app.api import rules, predictions, fleet, tools, parts, engine as engine_api, rul  # Import tools router
+from app.api import rules, predictions, fleet, tools, parts, engine as engine_api, rul, chat  # Import tools router
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -14,6 +14,8 @@ app.include_router(tools.router)
 app.include_router(parts.router)
 app.include_router(engine_api.router)
 app.include_router(rul.router)
+app.include_router(chat.router)
+
 
 @app.get("/api/health")
 def health_check():
