@@ -34,6 +34,18 @@ def get_telematics_drilldown(vin: str) -> dict:
     """Returns the raw telematics sensor data for a specific vehicle's current week."""
     return requests.get(f"{BASE_URL}/tools/telematics-drilldown", params={"vin": vin}).json()
 
+def get_fleet_risk_trend() -> dict:
+    """Returns the 18-day historical trend of the fleet's risk distribution (counts of low, medium, and high risk vehicles over time)."""
+    return requests.get(f"{BASE_URL}/fleet/risk-trend").json()
+
+def get_vehicle_probability_trend(vin: str, part_code: str) -> list:
+    """Returns the 12-week historical failure probability trend for a specific vehicle and a specific part (e.g., ALT-001)."""
+    return requests.get(f"{BASE_URL}/predictions/trend/{vin}", params={"part_code": part_code}).json()
+
+def get_top_precursors_fleet() -> list:
+    """Returns a ranked list of the most frequent telematics signals causing failures across the entire fleet."""
+    return requests.get(f"{BASE_URL}/engine/top-precursors").json()
+
 # --- 2. Define the Request Schema ---
 class Message(BaseModel):
     role: str # 'user' or 'assistant'
@@ -61,7 +73,16 @@ def chat_with_agent(request: ChatRequest):
 
     # Configure the AI with persona instructions and our backend tools
     config = types.GenerateContentConfig(
-        tools=[get_risk_summary, get_high_risk_vehicles, get_vehicle_details, get_telematics_drilldown],
+        tools=[
+            get_risk_summary, 
+            get_high_risk_vehicles, 
+            get_vehicle_details, 
+            get_telematics_drilldown,
+            get_fleet_risk_trend,           # NEW TOOL
+            get_vehicle_probability_trend,  # NEW TOOL
+            get_top_precursors_fleet,
+            compare_two_vehicles       
+        ],
         system_instruction=(
             "You are FleetGuard AI, an expert predictive maintenance assistant. "
             "You have access to live database tools to check fleet health and specific vehicle telemetry. "
@@ -87,3 +108,25 @@ def chat_with_agent(request: ChatRequest):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+def compare_two_vehicles(vin_a: str, vin_b: str) -> dict:
+    """
+    Fetches and compares the current risk tier, failure probability, and raw telematics for two specific vehicles side-by-side.
+    Use this whenever asked to compare two trucks or explain why one is performing better/worse than another.
+    """
+    vin_a = vin_a.upper()
+    vin_b = vin_b.upper()
+    
+    # Fetch high-level details for both
+    details_a = requests.get(f"{BASE_URL}/tools/vehicle-details", params={"vin": vin_a}).json()
+    details_b = requests.get(f"{BASE_URL}/tools/vehicle-details", params={"vin": vin_b}).json()
+    
+    # Fetch raw sensor data for both
+    telemetry_a = requests.get(f"{BASE_URL}/tools/telematics-drilldown", params={"vin": vin_a}).json()
+    telemetry_b = requests.get(f"{BASE_URL}/tools/telematics-drilldown", params={"vin": vin_b}).json()
+    
+    # Return a unified side-by-side dictionary
+    return {
+        vin_a: {"status": details_a, "telemetry": telemetry_a},
+        vin_b: {"status": details_b, "telemetry": telemetry_b}
+    }
