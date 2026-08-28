@@ -112,47 +112,98 @@ def get_risk_trend(db: Session = Depends(get_db)):
 @router.get("/alerts-and-insights")
 def get_alerts_and_insights(db: Session = Depends(get_db)):
     """
-    Generates text-based critical alerts and regional insights for the dashboard.
+    Generates dynamic alerts and fleet-wide insights.
     """
-    # --- 1. Dynamic Alerts ---
-    # Fetch the top 2 absolute highest risk vehicles
-    critical_preds = db.query(models.Prediction, models.Vehicle).join(
-        models.Vehicle, models.Prediction.vin == models.Vehicle.vin
-    ).filter(models.Prediction.risk_tier == "Red")\
-    .order_by(models.Prediction.failure_probability_pct.desc()).limit(2).all()
-    
+
+    # ---------------------------------------------------------
+    # 1. ALERTS
+    # ---------------------------------------------------------
+
+    critical_preds = (
+        db.query(models.Prediction, models.Vehicle, models.Part)
+        .join(
+            models.Vehicle,
+            models.Prediction.vin == models.Vehicle.vin
+        )
+        .join(
+            models.Part,
+            models.Prediction.part_code == models.Part.part_code
+        )
+        .filter(
+            models.Prediction.risk_tier.in_(["Red", "Amber"])
+        )
+        .order_by(
+            models.Prediction.failure_probability_pct.desc()
+        )
+        .limit(3)
+        .all()
+    )
+
     alerts = []
-    for p, v in critical_preds:
+
+    for p, v, part in critical_preds:
+
+        # Convert backend tier to frontend format
+        risk = p.risk_tier.lower()
+
         alerts.append({
-            "title": f"{p.part_code} failure imminent",
-            "description": f"Critical degradation detected for {v.vin}. Dominant driver: {p.top_signal}.",
-            "severity": "RED",
+            "title": f"{part.part_name} requires attention",
+            "detail": (
+                f"{v.model} ({v.vin}) has a "
+                f"{round(p.failure_probability_pct, 1)}% "
+                f"predicted failure probability."
+            ),
+            "risk": risk,
             "vin": v.vin,
-            "part_code": p.part_code
+            "component": part.part_name,
         })
 
-    # --- 2. Dynamic Insights ---
-    # Find which region has the highest concentration of Red-tier alerts
-    all_reds = db.query(models.Vehicle.region)\
-        .join(models.Prediction, models.Prediction.vin == models.Vehicle.vin)\
-        .filter(models.Prediction.risk_tier == "Red").all()
-        
-    top_region = "Midwest" # Fallback
+    # ---------------------------------------------------------
+    # 2. INSIGHTS
+    # ---------------------------------------------------------
+
+    all_reds = (
+        db.query(models.Vehicle.region)
+        .join(
+            models.Prediction,
+            models.Prediction.vin == models.Vehicle.vin
+        )
+        .filter(
+            models.Prediction.risk_tier == "Red"
+        )
+        .all()
+    )
+
+    top_region = "your fleet"
+
     if all_reds:
-        region_counts = Counter([r[0] for r in all_reds])
-        top_region = region_counts.most_common(1)[0][0]
+        region_counts = Counter(
+            region[0] for region in all_reds if region[0]
+        )
+
+        if region_counts:
+            top_region = region_counts.most_common(1)[0][0]
 
     insights = [
         {
             "title": f"Faults concentrated in {top_region} fleet",
-            "description": f"A majority of high-risk cases currently belong to the {top_region} regional corridor.",
-            "highlight": "High concentration"
+            "detail": (
+                f"High-risk predictions are currently concentrated "
+                f"within the {top_region} regional fleet."
+            ),
+            "stat": "High concentration",
         },
         {
             "title": "Aggressive driving accelerating degradation",
-            "description": "Harsh braking and high-RPM dwell times are driving premature wear across the fleet.",
-            "highlight": "+12% vs baseline"
-        }
+            "detail": (
+                "Harsh braking and high-RPM dwell time are "
+                "contributing to increased component wear."
+            ),
+            "stat": "Driving pattern",
+        },
     ]
-    
-    return {"alerts": alerts, "insights": insights}
+
+    return {
+        "alerts": alerts,
+        "insights": insights,
+    }
