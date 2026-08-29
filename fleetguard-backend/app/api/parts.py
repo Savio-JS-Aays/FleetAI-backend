@@ -48,7 +48,11 @@ def get_part_history(part_code: str, db: Session = Depends(get_db)):
     part_code = part_code.upper()
     
     # 1. Fetch all job cards (failures) for this specific part
-    failures = db.query(models.JobCard).filter(models.JobCard.part_code == part_code).all()
+    cutoff = date.today() - timedelta(days=365)
+    failures = db.query(models.JobCard).filter(
+        models.JobCard.part_code == part_code,
+        models.JobCard.failure_date >= cutoff,
+    ).all()
     
     if not failures:
         raise HTTPException(status_code=404, detail=f"No failure history found for part {part_code}")
@@ -63,7 +67,8 @@ def get_part_history(part_code: str, db: Session = Depends(get_db)):
     # We estimate this by using the vehicle's current total_km for our synthetic data
     vins_in_failures = [f.vin for f in failures]
     vehicles = db.query(models.Vehicle).filter(models.Vehicle.vin.in_(vins_in_failures)).all()
-    mileages = [v.total_km for v in vehicles if v.total_km > 0]
+    failure_mileage = [f.odometer_at_failure for f in failures if f.odometer_at_failure > 0]
+    mileages = failure_mileage or [v.total_km for v in vehicles if v.total_km > 0]
     avg_mileage = int(statistics.median(mileages)) if mileages else 0
 
     # 3. Build the 12-Month Histogram (Jan - Dec)
