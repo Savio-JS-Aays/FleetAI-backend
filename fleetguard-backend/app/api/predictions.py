@@ -15,7 +15,7 @@ def trigger_batch_scoring(db: Session = Depends(get_db)):
 
 @router.get("/")
 def get_ranked_predictions(sort: str = "desc", db: Session = Depends(get_db)):
-    """Returns fleet predictions ranked by failure probability."""
+    """Returns all fleet predictions ranked by failure probability."""
 
     query = (
         db.query(models.Prediction, models.Vehicle, models.Part)
@@ -29,57 +29,76 @@ def get_ranked_predictions(sort: str = "desc", db: Session = Depends(get_db)):
         )
     )
 
+    # Sort all VIN + part predictions by probability
     if sort == "desc":
         query = query.order_by(
-            models.Prediction.failure_probability_pct.desc()
+            models.Prediction.failure_probability_pct.desc(),
+            models.Prediction.vin.asc(),
+            models.Prediction.part_code.asc(),
         )
     else:
         query = query.order_by(
-            models.Prediction.failure_probability_pct.asc()
+            models.Prediction.failure_probability_pct.asc(),
+            models.Prediction.vin.asc(),
+            models.Prediction.part_code.asc(),
         )
 
     predictions = query.all()
 
-    # Keep only the highest-risk prediction for each vehicle
-    unique_vehicles = {}
+    response = []
 
+    # Return EVERY prediction record.
+    # Do NOT collapse multiple parts belonging to the same VIN.
     for p, v, part in predictions:
 
-        if p.vin not in unique_vehicles:
+        # Safely format values coming from the database
+        vehicle_name = (
+            v.model
+            if v.model
+            else "Unknown vehicle"
+        )
 
-            # Safely format values coming from the database
-            vehicle_name = v.model if v.model else "Unknown vehicle"
-            region = v.region if v.region else "Unknown region"
-            component_name = (
-                part.part_name
-                if part.part_name
-                else p.part_code
-            )
+        region = (
+            v.region
+            if v.region
+            else "Unknown region"
+        )
 
-            probability = (
-                round(float(p.failure_probability_pct), 1)
-                if p.failure_probability_pct is not None
-                else 0
-            )
+        component_name = (
+            part.part_name
+            if part.part_name
+            else p.part_code
+        )
 
-            rul = (
-                p.rul_km
-                if p.rul_km is not None
-                else 0
-            )
+        probability = (
+            round(float(p.failure_probability_pct), 1)
+            if p.failure_probability_pct is not None
+            else 0
+        )
 
-            risk = (
-                p.risk_tier.lower()
-                if p.risk_tier
-                else "green"
-            )
+        rul = (
+            p.rul_km
+            if p.rul_km is not None
+            else 0
+        )
 
-            unique_vehicles[p.vin] = {
+        risk = (
+            p.risk_tier.lower()
+            if p.risk_tier
+            else "green"
+        )
+
+        response.append(
+            {
                 "vin": v.vin,
 
                 # Vehicle information
                 "vehicle": vehicle_name,
-                "miles": f"{v.total_km:,} km" if v.total_km is not None else "—",
+                "miles": (
+                    f"{v.total_km:,} km"
+                    if v.total_km is not None
+                    else "—"
+                ),
                 "fleet": "Fleet Operations",
                 "region": region,
 
@@ -91,8 +110,9 @@ def get_ranked_predictions(sort: str = "desc", db: Session = Depends(get_db)):
                 "risk": risk,
                 "top_signal": p.top_signal,
             }
+        )
 
-    return list(unique_vehicles.values())
+    return response
 
 @router.get("/trend/{vin}")
 def get_probability_trend(vin: str, part_code: str, db: Session = Depends(get_db)):
