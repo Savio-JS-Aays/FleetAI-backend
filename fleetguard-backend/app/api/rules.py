@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from app.database import get_db
+from app.ml.backtest import calculate_backtest
 from app.ml.correlation import calculate_signal_weights
 from app import models, schemas
 from pydantic import BaseModel
@@ -45,45 +46,35 @@ def get_saved_rule(part_code: str, db: Session = Depends(get_db)):
     """Retrieves the currently active rule for a part."""
     rules = db.query(models.RuleConfig).filter(models.RuleConfig.part_code == part_code).all()
     return rules
-@router.post("/backtest")
-def backtest_rule(payload: BacktestRequest):
-    """
-    Step 4 of Rule Builder: Backtests the proposed formula against historical data.
-    """
-    payload.part_code = payload.part_code.upper()
-    
-    # 1. Define the "ground truth" signals we mathematically injected in generate_data.py
-    critical_signals = {
-        "ALT-001": ["battery_voltage_sag", "coolant_temp_variance"],
-        "WP-002": ["coolant_temp_variance", "idle_time_pct"],
-        "TC-003": ["high_rpm_dwell_time", "oil_pressure_dips"]
-    }
-    
-    part_criticals = critical_signals.get(payload.part_code, [])
-    
-    # 2. Check if the user kept the critical signals in their custom rule
-    kept_criticals = sum(1 for sig in part_criticals if sig in payload.selected_signals)
-    total_criticals = len(part_criticals) if part_criticals else 1
-    
-    # Calculate an accuracy multiplier (1.0 if they kept everything, lower if they removed things)
-    accuracy_ratio = kept_criticals / total_criticals
-    
-    # 3. Generate the backtest metrics based on the formula's accuracy
-    # If they keep the top signals, it returns exactly what is shown in the UI mockup.
-    # If they uncheck a critical signal, the coverage and precision will realistically drop.
-    coverage = int(85 * accuracy_ratio) 
-    precision = int(74 * accuracy_ratio)
-    
-    # Since we injected synthetic failures 14-28 days out, the average alert is 21 days.
-    days_to_alert = 21 if accuracy_ratio > 0 else 0
-    
-    # Ensure metrics never drop completely to 0 to mimic real-world noise
-    final_precision = max(12, precision)
-    final_coverage = max(15, coverage)
-    
-    return {
-        "days_to_alert": days_to_alert,
-        "rule_precision_pct": final_precision,
-        "rule_coverage_pct": final_coverage
-    }
 
+@router.get("/rule-trend")
+def get_rule_trend(part_code: str, db: Session = Depends(get_db)):
+    """Return the last ten fleet-average scores for the active part rule."""
+    active_rules = db.query(models.RuleConfig).filter(
+        models.RuleConfig.part_code == part_code.upper(),
+        models.RuleConfig.is_included == True,
+    ).all()
+    if not active_rules:
+        return []
+
+    weights = {rule.signal_name: rule.correlation_weight for rule in active_rules}
+    rows = db.query(models.Telematics).order_by(
+        models.Telematics.week_start_date.desc()
+    ).all()
+    weekly_scores = {}
+    for row in rows:
+        score = sum(getattr(row, signal, 0.0) * weight for signal, weight in weights.items())
+        weekly_scores.setdefault(row.week_start_date, []).append(min(score * 100, 100.0))
+
+    return [
+        {
+            "week_start_date": week,
+            "probability": round(sum(scores) / len(scores), 2),
+        }
+        for week, scores in sorted(weekly_scores.items())[-10:]
+    ]
+
+@router.post("/backtest")
+def backtest_rule(payload: BacktestRequest, db: Session = Depends(get_db)):
+    """Evaluate a selected-signal rule against historical fleet outcomes."""
+    return calculate_backtest(payload.part_code, payload.selected_signals, db)
