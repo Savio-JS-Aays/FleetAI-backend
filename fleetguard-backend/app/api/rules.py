@@ -86,3 +86,4 @@ def backtest_rule(payload: BacktestRequest):
         "rule_precision_pct": final_precision,
         "rule_coverage_pct": final_coverage
     }
+
