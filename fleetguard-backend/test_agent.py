@@ -9,7 +9,7 @@ load_dotenv()
 api_key = os.getenv("GEMINI_API_KEY")
 
 if not api_key or api_key == "your_gemini_api_key_here":
-    print("CRITICAL ERROR: Please set a valid LLM_API_KEY in your .env file.")
+    print("CRITICAL ERROR: Please set a valid GEMINI_API_KEY in your .env file.")
     exit(1)
 
 # Initialize the new SDK Client
