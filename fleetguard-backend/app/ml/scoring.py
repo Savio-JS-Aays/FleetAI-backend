@@ -1,7 +1,9 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import date
+import pandas as pd
 from app import models
+from app.ml.correlation import FEATURES, train_part_model
 
 
 def run_fleet_scoring(db: Session):
@@ -31,6 +33,15 @@ def run_fleet_scoring(db: Session):
 
     if not rules_by_part:
         return 0
+
+    models_by_part = {
+        part_code: train_part_model(
+            part_code,
+            [signal for signal in rule_weights if signal in FEATURES],
+            db,
+        )
+        for part_code, rule_weights in rules_by_part.items()
+    }
 
     # 2. Fetch reference dictionaries for fast O(1) lookups
     vehicles = {
@@ -85,27 +96,35 @@ def run_fleet_scoring(db: Session):
             )
 
             # --- Probability Calculation ---
-            total_score = 0.0
+            selected_signals = [
+                signal for signal in rule_weights if signal in FEATURES
+            ]
+            model = models_by_part[part_code]
             signal_contributions = {}
 
-            for signal, weight in rule_weights.items():
-
-                live_value = getattr(
-                    record,
-                    signal,
-                    0.0
+            if model is None:
+                probability_pct = 0.0
+            else:
+                values = {
+                    signal: getattr(record, signal, 0.0)
+                    for signal in selected_signals
+                }
+                feature_frame = pd.DataFrame(
+                    [values],
+                    columns=selected_signals,
                 )
-
-                contribution = live_value * weight
-
-                total_score += contribution
-
-                signal_contributions[signal] = contribution
-
-            probability_pct = min(
-                round(total_score * 100, 2),
-                100.0
-            )
+                probability_pct = round(
+                    float(model.predict_proba(feature_frame)[0, 1]) * 100,
+                    2,
+                )
+                scaled_values = model[0].transform(feature_frame)[0]
+                coefficients = model[-1].coef_[0]
+                signal_contributions = {
+                    signal: float(value * coefficient)
+                    for signal, value, coefficient in zip(
+                        selected_signals, scaled_values, coefficients
+                    )
+                }
 
             # --- Risk Tier ---
             if probability_pct >= 70.0:

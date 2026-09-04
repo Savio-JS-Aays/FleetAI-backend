@@ -1,8 +1,10 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from app.database import get_db
+import pandas as pd
 from app.ml.backtest import calculate_backtest
 from app.ml.correlation import calculate_signal_weights
+from app.ml.correlation import FEATURES, train_part_model
 from app import models, schemas
 from pydantic import BaseModel
 from typing import List
@@ -57,14 +59,24 @@ def get_rule_trend(part_code: str, db: Session = Depends(get_db)):
     if not active_rules:
         return []
 
-    weights = {rule.signal_name: rule.correlation_weight for rule in active_rules}
+    selected_signals = [
+        rule.signal_name for rule in active_rules
+        if rule.signal_name in FEATURES
+    ]
+    model = train_part_model(part_code, selected_signals, db)
+    if model is None:
+        return []
     rows = db.query(models.Telematics).order_by(
         models.Telematics.week_start_date.desc()
     ).all()
     weekly_scores = {}
     for row in rows:
-        score = sum(getattr(row, signal, 0.0) * weight for signal, weight in weights.items())
-        weekly_scores.setdefault(row.week_start_date, []).append(min(score * 100, 100.0))
+        values = pd.DataFrame([{
+            signal: getattr(row, signal, 0.0)
+            for signal in selected_signals
+        }], columns=selected_signals)
+        probability = float(model.predict_proba(values)[0, 1]) * 100
+        weekly_scores.setdefault(row.week_start_date, []).append(probability)
 
     return [
         {
