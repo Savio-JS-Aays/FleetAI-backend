@@ -1,12 +1,12 @@
 import random
 import numpy as np
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 from app.database import SessionLocal, engine
 from app import models
 
-# P0 Requirement: Fixed random seed for reproducible datasets
+# Fixed random seed for reproducible datasets
 RANDOM_SEED = 42
-NUM_VEHICLES = 300
+NUM_VEHICLES = 500
 
 random.seed(RANDOM_SEED)
 np.random.seed(RANDOM_SEED)
@@ -17,6 +17,8 @@ def generate_parts(db):
         models.Part(part_code="ALT-001", part_name="Alternator", category="Electrical", design_life_km=300000),
         models.Part(part_code="WP-002", part_name="Water Pump", category="Cooling", design_life_km=250000),
         models.Part(part_code="TC-003", part_name="Turbocharger", category="Engine", design_life_km=400000),
+        models.Part(part_code="BP-004", part_name="Brake Pads", category="Braking", design_life_km=100000),
+        models.Part(part_code="GB-005", part_name="Gearbox", category="Transmission", design_life_km=500000),
     ]
     db.query(models.Part).delete() 
     db.add_all(parts)
@@ -52,15 +54,15 @@ def generate_job_cards(db, vehicles, parts):
     db.query(models.JobCard).delete()
     
     job_cards = []
-    # Generate ~200 historical failures
-    failing_vehicles = random.sample(vehicles, 200)
+    # Generate ~250 historical failures
+    failing_vehicles = random.sample(vehicles, 250)
     
     for i, v in enumerate(failing_vehicles):
         part = random.choice(parts)
         days_ago = random.randint(30, 360)
         fail_date = date.today() - timedelta(days=days_ago)
         
-        # P0 Validation: Odometer at failure must be logically lower than current total_km
+        # Odometer at failure must be logically lower than current total_km
         odom = int(v.total_km * (1.0 - (days_ago / (5 * 365.0))))
         
         job_cards.append(models.JobCard(
@@ -77,27 +79,26 @@ def generate_telematics(db, vehicles, job_cards):
     print("Generating 52 Weeks of Telematics with Intentional Signals...")
     db.query(models.Telematics).delete()
     
-    # Fast lookup for failures by VIN
     failure_map = {}
     for jc in job_cards:
         if jc.vin not in failure_map:
             failure_map[jc.vin] = []
         failure_map[jc.vin].append(jc)
         
-    # Select 15 specific vehicles to experience "Imminent Failures" this week
-    imminent_vins = [v.vin for v in vehicles[:15]]
+    # Assign ~50 vehicles to have an active, ongoing degradation right now
+    imminent_vins = {v.vin: random.choice(["ALT-001", "WP-002", "TC-003", "BP-004", "GB-005"]) for v in vehicles[:50]}
         
     telematics_records = []
     today = date.today()
     
     for v in vehicles:
         v_failures = failure_map.get(v.vin, [])
-        is_imminent = v.vin in imminent_vins
+        active_failing_part = imminent_vins.get(v.vin)
         
         for week_offset in range(52):
             week_date = today - timedelta(days=(week_offset * 7))
             
-            # 1. Base Normal Signals (Healthy)
+            # Base Normal Signals (Healthy)
             coolant = np.clip(np.random.normal(0.2, 0.05), 0, 1)
             oil_dips = max(0, int(np.random.normal(1, 1)))
             voltage_sag = np.clip(np.random.normal(0.1, 0.05), 0, 1)
@@ -108,25 +109,35 @@ def generate_telematics(db, vehicles, job_cards):
             short_trip = np.clip(np.random.normal(0.3, 0.1), 0, 1)
             idle = np.clip(np.random.normal(0.15, 0.05), 0, 1)
             
-            # 2. Historical Failure Injection (Past)
+            # Helper to spike specific signals based on the failing part
+            def apply_degradation(part_code, severity_multiplier):
+                nonlocal voltage_sag, rpm_dwell, coolant, idle, oil_dips, short_trip, braking, overload
+                if part_code == "ALT-001":
+                    voltage_sag = np.clip(np.random.normal(0.8 * severity_multiplier, 0.1), 0, 1)
+                    rpm_dwell = np.clip(np.random.normal(0.7 * severity_multiplier, 0.1), 0, 1)
+                elif part_code == "WP-002":
+                    coolant = np.clip(np.random.normal(0.9 * severity_multiplier, 0.05), 0, 1)
+                    idle = np.clip(np.random.normal(0.8 * severity_multiplier, 0.1), 0, 1)
+                elif part_code == "TC-003":
+                    oil_dips = max(3, int(np.random.normal(10 * severity_multiplier, 2)))
+                    short_trip = np.clip(np.random.normal(0.75 * severity_multiplier, 0.1), 0, 1)
+                elif part_code == "BP-004":
+                    braking = np.clip(np.random.normal(0.85 * severity_multiplier, 0.1), 0, 1)
+                    short_trip = np.clip(np.random.normal(0.6 * severity_multiplier, 0.1), 0, 1)
+                elif part_code == "GB-005":
+                    overload = np.clip(np.random.normal(0.9 * severity_multiplier, 0.1), 0, 1)
+                    rpm_dwell = np.clip(np.random.normal(0.8 * severity_multiplier, 0.1), 0, 1)
+
+            # Inject Historical Failure Spikes (14-28 days prior to past failure)
             for jc in v_failures:
                 days_until_failure = (jc.failure_date - week_date).days
-                if 14 <= days_until_failure <= 28:
-                    if jc.part_code == "ALT-001": 
-                        voltage_sag = np.clip(np.random.normal(0.85, 0.1), 0, 1)
-                        coolant = np.clip(np.random.normal(0.80, 0.1), 0, 1)
-                    elif jc.part_code == "WP-002": 
-                        coolant = np.clip(np.random.normal(0.90, 0.05), 0, 1)
-                        idle = np.clip(np.random.normal(0.70, 0.1), 0, 1)
-                    elif jc.part_code == "TC-003": 
-                        rpm_dwell = np.clip(np.random.normal(0.80, 0.1), 0, 1)
-                        oil_dips = max(5, int(np.random.normal(15, 3)))
+                if 0 <= days_until_failure <= 28:
+                    apply_degradation(jc.part_code, 1.0)
                         
-            # 3. Imminent Failure Injection (Current Week)
-            # This ensures we have Red-tier vehicles for the dashboard right now
-            if is_imminent and week_offset <= 1:
-                voltage_sag = np.clip(np.random.normal(0.95, 0.05), 0, 1)
-                coolant = np.clip(np.random.normal(0.90, 0.05), 0, 1)
+            # Inject Active Imminent Failure Spikes (Gets worse closer to today)
+            if active_failing_part and week_offset <= 4:
+                severity = 1.0 - (week_offset * 0.15) # Today is 1.0, 4 weeks ago is 0.4
+                apply_degradation(active_failing_part, severity)
                         
             telematics_records.append(models.Telematics(
                 vin=v.vin, week_start_date=week_date, coolant_temp_variance=float(coolant),
@@ -136,7 +147,7 @@ def generate_telematics(db, vehicles, job_cards):
                 short_trip_ratio=float(short_trip), idle_time_pct=float(idle)
             ))
             
-        if len(telematics_records) > 5000:
+        if len(telematics_records) > 10000:
             db.add_all(telematics_records)
             db.commit()
             telematics_records = []
@@ -145,7 +156,8 @@ def generate_telematics(db, vehicles, job_cards):
         db.add_all(telematics_records)
         db.commit()
         
-    print("-> Generated 15,600 telematics records successfully.")
+    print(f"-> Generated {NUM_VEHICLES * 52} telematics records successfully.")
+
 
 def main():
     models.Base.metadata.create_all(bind=engine)
@@ -155,7 +167,7 @@ def main():
         vehicles = generate_vehicles(db)
         job_cards = generate_job_cards(db, vehicles, parts)
         generate_telematics(db, vehicles, job_cards)
-        print("\nSuccess: Fully synthetic dataset injected and ready for ML!")
+        print("\nSuccess: Fully synthetic 500-vehicle dataset injected and ready for Developer B!")
     finally:
         db.close()
 

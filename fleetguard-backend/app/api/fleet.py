@@ -119,45 +119,24 @@ def get_alerts_and_insights(db: Session = Depends(get_db)):
     # 1. ALERTS
     # ---------------------------------------------------------
 
-    critical_preds = (
-        db.query(models.Prediction, models.Vehicle, models.Part)
-        .join(
-            models.Vehicle,
-            models.Prediction.vin == models.Vehicle.vin
-        )
-        .join(
-            models.Part,
-            models.Prediction.part_code == models.Part.part_code
-        )
-        .filter(
-            models.Prediction.risk_tier.in_(["Red", "Amber"])
-        )
-        .order_by(
-            models.Prediction.failure_probability_pct.desc()
-        )
-        .limit(3)
-        .all()
-    )
-
+    # Fetch the top 2 absolute highest risk vehicles, joining BOTH Vehicle and Part tables
+    critical_preds = db.query(models.Prediction, models.Vehicle, models.Part).join(
+        models.Vehicle, models.Prediction.vin == models.Vehicle.vin
+    ).join(
+        models.Part, models.Prediction.part_code == models.Part.part_code
+    ).filter(models.Prediction.risk_tier == "Red")\
+    .order_by(models.Prediction.failure_probability_pct.desc()).limit(2).all()
+    
     alerts = []
-
-    for p, v, part in critical_preds:
-
-        # Convert backend tier to frontend format
-        risk = p.risk_tier.lower()
-
+    # Notice we unpack 'p' (Prediction), 'v' (Vehicle), and 'pt' (Part)
+    for p, v, pt in critical_preds:
         alerts.append({
-            "title": f"{part.part_name} requires attention",
-            "detail": (
-                f"{v.model} ({v.vin}) has a "
-                f"{round(p.failure_probability_pct, 1)}% "
-                f"predicted failure probability."
-            ),
-            "risk": risk,
+            "title": f"{pt.part_name} failure imminent", # FIX: Now uses "Alternator" instead of "ALT-001"
+            "description": f"Critical degradation detected for {v.vin}. Dominant driver: {p.top_signal}.",
+            "severity": "RED",
             "vin": v.vin,
-            "component": part.part_name,
+            "part_code": p.part_code
         })
-
     # ---------------------------------------------------------
     # 2. INSIGHTS
     # ---------------------------------------------------------
