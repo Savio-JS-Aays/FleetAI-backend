@@ -1,7 +1,10 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from app.database import get_db
+import pandas as pd
+from app.ml.backtest import calculate_backtest
 from app.ml.correlation import calculate_signal_weights
+from app.ml.correlation import FEATURES, train_part_model
 from app import models, schemas
 from pydantic import BaseModel
 from typing import List
@@ -109,6 +112,44 @@ def get_saved_rule(part_code: str, db: Session = Depends(get_db)):
     """Retrieves the currently active rule for a part."""
     rules = db.query(models.RuleConfig).filter(models.RuleConfig.part_code == part_code).all()
     return rules
+
+@router.get("/rule-trend")
+def get_rule_trend(part_code: str, db: Session = Depends(get_db)):
+    """Return the last ten fleet-average scores for the active part rule."""
+    active_rules = db.query(models.RuleConfig).filter(
+        models.RuleConfig.part_code == part_code.upper(),
+        models.RuleConfig.is_included == True,
+    ).all()
+    if not active_rules:
+        return []
+
+    selected_signals = [
+        rule.signal_name for rule in active_rules
+        if rule.signal_name in FEATURES
+    ]
+    model = train_part_model(part_code, selected_signals, db)
+    if model is None:
+        return []
+    rows = db.query(models.Telematics).order_by(
+        models.Telematics.week_start_date.desc()
+    ).all()
+    weekly_scores = {}
+    for row in rows:
+        values = pd.DataFrame([{
+            signal: getattr(row, signal, 0.0)
+            for signal in selected_signals
+        }], columns=selected_signals)
+        probability = float(model.predict_proba(values)[0, 1]) * 100
+        weekly_scores.setdefault(row.week_start_date, []).append(probability)
+
+    return [
+        {
+            "week_start_date": week,
+            "probability": round(sum(scores) / len(scores), 2),
+        }
+        for week, scores in sorted(weekly_scores.items())[-10:]
+    ]
+
 @router.post("/backtest")
 def backtest_rule(payload: BacktestRequest):
     """

@@ -1,9 +1,68 @@
+from datetime import date
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app import models
 
 router = APIRouter(prefix="/api/rul", tags=["Remaining Useful Life"])
+
+
+def calculate_rul_days(prediction, vehicle) -> tuple[int, float]:
+    elapsed_days = max(
+        (date.today() - vehicle.registration_date).days,
+        1,
+    )
+    daily_km_usage = max(
+        vehicle.total_km / elapsed_days,
+        1.0,
+    )
+    rul_days = (
+        int(prediction.rul_km / daily_km_usage)
+        if prediction.rul_km > 0
+        else 0
+    )
+    return rul_days, daily_km_usage
+
+
+@router.get("/fleet")
+def get_fleet_rul(db: Session = Depends(get_db)):
+    """Return the most urgent predicted RUL and days for every VIN."""
+    rows = (
+        db.query(models.Prediction, models.Vehicle, models.Part)
+        .join(models.Vehicle, models.Prediction.vin == models.Vehicle.vin)
+        .join(models.Part, models.Prediction.part_code == models.Part.part_code)
+        .order_by(
+            models.Prediction.vin.asc(),
+            models.Prediction.rul_km.asc(),
+        )
+        .all()
+    )
+
+    fleet = {}
+    for prediction, vehicle, part in rows:
+        if vehicle.vin in fleet:
+            continue
+
+        rul_days, daily_km_usage = calculate_rul_days(prediction, vehicle)
+        fleet[vehicle.vin] = {
+            "vin": vehicle.vin,
+            "vehicle": vehicle.model,
+            "region": vehicle.region,
+            "part_code": prediction.part_code,
+            "component": part.part_name,
+            "predicted_rul_km": int(prediction.rul_km),
+            "predicted_rul_days": rul_days,
+            "observed_daily_usage_km": round(daily_km_usage, 2),
+            "failure_probability_pct": round(
+                float(prediction.failure_probability_pct),
+                2,
+            ),
+            "risk_tier": prediction.risk_tier,
+        }
+
+    return list(fleet.values())
+
 
 @router.get("/{vin}/details")
 def get_rul_details(vin: str, part_code: str, db: Session = Depends(get_db)):
@@ -19,11 +78,13 @@ def get_rul_details(vin: str, part_code: str, db: Session = Depends(get_db)):
     if not prediction:
         raise HTTPException(status_code=404, detail="No prediction found.")
 
-    # Assume an average fleet usage rate to convert KM to Days
-    # (In a production app, we would average the specific VIN's historical weekly km)
-    daily_km_usage = 114 
-    
-    rul_days = int(prediction.rul_km / daily_km_usage) if prediction.rul_km > 0 else 0
+    vehicle = db.query(models.Vehicle).filter(
+        models.Vehicle.vin == vin
+    ).first()
+    if not vehicle:
+        raise HTTPException(status_code=404, detail="Vehicle not found.")
+
+    rul_days, daily_km_usage = calculate_rul_days(prediction, vehicle)
     
     # Synthesize the statistical confidence and trend based on risk tier
     confidence = 93 if prediction.risk_tier == "Red" else (88 if prediction.risk_tier == "Amber" else 75)

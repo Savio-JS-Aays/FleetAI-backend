@@ -1,65 +1,89 @@
 import pandas as pd
 import numpy as np
 from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 from sqlalchemy.orm import Session
-from app.models import Telematics, JobCard
+from app import models
+
+
+FEATURES = (
+    "coolant_temp_variance", "oil_pressure_dips", "battery_voltage_sag",
+    "dtc_recurrence_rate", "harsh_braking_frequency", "overload_duty_share",
+    "high_rpm_dwell_time", "short_trip_ratio", "idle_time_pct",
+)
+
+
+def _load_labeled_history(part_code: str, db: Session) -> pd.DataFrame:
+    telematics = pd.read_sql(db.query(models.Telematics).statement, db.bind)
+    failures = db.query(models.JobCard).filter(
+        models.JobCard.part_code == part_code
+    ).all()
+    if telematics.empty or not failures:
+        return pd.DataFrame()
+
+    telematics["week_start_date"] = pd.to_datetime(telematics["week_start_date"])
+    failure_dates = {}
+    for failure in failures:
+        failure_dates.setdefault(failure.vin, []).append(
+            pd.Timestamp(failure.failure_date)
+        )
+
+    def next_failure(row):
+        future_dates = [
+            failure_date for failure_date in failure_dates.get(row.vin, [])
+            if failure_date >= row.week_start_date
+        ]
+        return min(future_dates) if future_dates else pd.NaT
+
+    telematics["failure_date"] = telematics.apply(next_failure, axis=1)
+    has_failure_vin = telematics["vin"].isin(failure_dates)
+    telematics = telematics[
+        telematics["failure_date"].notna() | ~has_failure_vin
+    ].copy()
+    days_to_fail = (
+        telematics["failure_date"] - telematics["week_start_date"]
+    ).dt.days
+    telematics["label"] = days_to_fail.between(0, 28).astype(int)
+    for feature in FEATURES:
+        telematics[feature] = pd.to_numeric(telematics[feature], errors="coerce")
+    return telematics.dropna(subset=list(FEATURES))
+
+
+def train_part_model(part_code: str, selected_signals: list[str], db: Session):
+    """Train the production model using the same labeled history as backtests."""
+    signals = list(dict.fromkeys(selected_signals))
+    if not signals or any(signal not in FEATURES for signal in signals):
+        return None
+    history = _load_labeled_history(part_code.strip().upper(), db)
+    if history.empty or history["label"].nunique() < 2:
+        return None
+    model = make_pipeline(
+        StandardScaler(),
+        LogisticRegression(max_iter=2000, random_state=42, C=1.0),
+    )
+    model.fit(history[signals], history["label"])
+    return model
 
 def calculate_signal_weights(part_code: str, db: Session) -> list:
     """
     Calculates normalized feature importance weights for a given part 
     using Logistic Regression.
     """
-    # 1. Fetch raw data using pandas reading from SQLAlchemy
-    # We load all telematics and ONLY the job cards for the requested part
-    telematics_query = db.query(Telematics).statement
-    df = pd.read_sql(telematics_query, db.bind)
-    
-    jc_query = db.query(JobCard).filter(JobCard.part_code == part_code).statement
-    df_jc = pd.read_sql(jc_query, db.bind)
-    
-    # 2. Merge Data
-    df['week_start_date'] = pd.to_datetime(df['week_start_date'])
-    df_jc['failure_date'] = pd.to_datetime(df_jc['failure_date'])
-    
-    merged_df = df.merge(df_jc[['vin', 'failure_date']], on='vin', how='left')
-    
-    # 3. Data Leakage Prevention (P0 Requirement)
-    # Drop any telematics rows that occur strictly AFTER the failure date.
-    valid_rows = (merged_df['failure_date'].isna()) | (merged_df['week_start_date'] <= merged_df['failure_date'])
-    clean_df = merged_df[valid_rows].copy()
-    
-    # 4. Label Generation
-    # Label 1 (Pre-failure) if within 28 days (4 weeks) prior to failure. Otherwise 0.
-    clean_df['days_to_fail'] = (clean_df['failure_date'] - clean_df['week_start_date']).dt.days
-    clean_df['label'] = np.where(
-        (clean_df['days_to_fail'] >= 0) & (clean_df['days_to_fail'] <= 28), 1, 0
-    )
-    
-    # 5. Model Training
-    features = [
-        'coolant_temp_variance', 'oil_pressure_dips', 'battery_voltage_sag',
-        'dtc_recurrence_rate', 'harsh_braking_frequency', 'overload_duty_share',
-        'high_rpm_dwell_time', 'short_trip_ratio', 'idle_time_pct'
-    ]
-    
-    X = clean_df[features]
-    y = clean_df['label']
-    
-    # Using l2 penalty as required
-    model = LogisticRegression(max_iter=1000, random_state=42)
-    model.fit(X, y)
-    
-    # 6. Weight Normalization
-    # Extract absolute coefficients (C_i = |w_i|)
-    coefs = np.abs(model.coef_[0])
+    model = train_part_model(part_code, list(FEATURES), db)
+    if model is None:
+        return []
+    coefs = np.abs(model[-1].coef_[0])
     total_weight = np.sum(coefs)
-    
+    if total_weight == 0:
+        return []
+
     # Normalize weights so they sum to 1.0 (100%)
     normalized_weights = coefs / total_weight
     
     # 7. Format Response
     results = []
-    for feature, weight in zip(features, normalized_weights):
+    for feature, weight in zip(FEATURES, normalized_weights):
         results.append({
             "signal": feature,
             "weight": float(weight)

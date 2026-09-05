@@ -1,8 +1,12 @@
+import pandas as pd
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app import models
 from app.ml.scoring import run_fleet_scoring
+from app.ml.correlation import FEATURES, train_part_model
+from app.api.rul import calculate_rul_days
 from fastapi import HTTPException
 
 router = APIRouter(prefix="/api/predictions", tags=["Predictions"])
@@ -81,6 +85,7 @@ def get_ranked_predictions(sort: str = "desc", db: Session = Depends(get_db)):
             if p.rul_km is not None
             else 0
         )
+        rul_days, _ = calculate_rul_days(p, v)
 
         risk = (
             p.risk_tier.lower()
@@ -107,6 +112,8 @@ def get_ranked_predictions(sort: str = "desc", db: Session = Depends(get_db)):
                 "part_code": p.part_code,
                 "probability": probability,
                 "rul": f"{rul:,} km",
+                "predicted_rul_km": rul,
+                "predicted_rul_days": rul_days,
                 "risk": risk,
                 "top_signal": p.top_signal,
             }
@@ -128,7 +135,12 @@ def get_probability_trend(vin: str, part_code: str, db: Session = Depends(get_db
     if not active_rules:
         return []
         
-    rule_weights = {r.signal_name: r.correlation_weight for r in active_rules}
+    selected_signals = [
+        r.signal_name for r in active_rules if r.signal_name in FEATURES
+    ]
+    model = train_part_model(part_code, selected_signals, db)
+    if model is None:
+        return []
     
     # 2. Get the last 12 weeks of telematics for this VIN, ordered chronologically
     history = db.query(models.Telematics).filter(models.Telematics.vin == vin)\
@@ -139,12 +151,14 @@ def get_probability_trend(vin: str, part_code: str, db: Session = Depends(get_db
     # 3. Apply the rule to each week to generate the trend
     trend = []
     for record in history:
-        total_score = 0.0
-        for signal, weight in rule_weights.items():
-            live_value = getattr(record, signal, 0.0)
-            total_score += (live_value * weight)
-            
-        prob_pct = min(round(total_score * 100, 2), 100.0)
+        values = pd.DataFrame([{
+            signal: getattr(record, signal, 0.0)
+            for signal in selected_signals
+        }], columns=selected_signals)
+        prob_pct = round(
+            float(model.predict_proba(values)[0, 1]) * 100,
+            2,
+        )
         trend.append({
             "week_start_date": record.week_start_date,
             "probability": prob_pct
@@ -159,9 +173,8 @@ def get_signal_breakdown(vin: str, part_code: str, db: Session = Depends(get_db)
     vin = vin.upper()
     part_code = part_code.upper()
 
-    # 1. Get the active rule weights for this part
     active_rules = db.query(models.RuleConfig).filter(
-        models.RuleConfig.part_code == part_code, 
+        models.RuleConfig.part_code == part_code,
         models.RuleConfig.is_included == True
     ).all()
     
