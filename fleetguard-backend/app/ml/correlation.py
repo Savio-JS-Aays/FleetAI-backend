@@ -65,14 +65,26 @@ def train_part_model(part_code: str, selected_signals: list[str], db: Session):
     model.fit(history[signals], history["label"])
     return model
 
-def calculate_signal_weights(part_code: str, db: Session) -> list:
+def calculate_signal_weights(part_code: str, db: Session, exclude: list = None) -> list:
     """
     Calculates normalized feature importance weights for a given part 
-    using Logistic Regression.
+    using Logistic Regression. Dynamically recalculates if signals are excluded.
     """
-    model = train_part_model(part_code, list(FEATURES), db)
+    if exclude is None:
+        exclude = []
+        
+    # 1. Filter out the excluded features before passing to the model
+    active_features = [f for f in FEATURES if f not in exclude]
+    
+    # If all features are somehow excluded, return an empty list safely
+    if not active_features:
+        return []
+
+    # 2. Train the model ONLY on the active features
+    model = train_part_model(part_code, active_features, db)
     if model is None:
         return []
+        
     coefs = np.abs(model[-1].coef_[0])
     total_weight = np.sum(coefs)
     if total_weight == 0:
@@ -81,17 +93,18 @@ def calculate_signal_weights(part_code: str, db: Session) -> list:
     # Normalize weights so they sum to 1.0 (100%)
     normalized_weights = coefs / total_weight
     
-    # 7. Format Response
+    # 3. Format Response
     results = []
-    for feature, weight in zip(FEATURES, normalized_weights):
+    for feature, weight in zip(active_features, normalized_weights):
         results.append({
             "signal": feature,
-            "weight": float(weight)
+            # Rounding to 3 decimal places here (e.g., 0.289). 
+            # When your React frontend multiplies it by 100, it becomes a clean 28.9%
+            "weight": round(float(weight), 3) 
         })
         
     # Sort descending by weight
     return sorted(results, key=lambda x: x['weight'], reverse=True)
-
 
 # --- Quick Local Verification Block ---
 if __name__ == "__main__":

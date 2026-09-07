@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends
+
+from fastapi import Query, APIRouter, Depends
 from sqlalchemy.orm import Session
 from app.database import get_db
 import pandas as pd
@@ -78,9 +79,21 @@ def run_prediction_engine_for_part(part_code: str, db: Session):
 
 
 @router.get("/correlations")
-def get_correlations(part_code: str, db: Session = Depends(get_db)):
-    """Dynamically calculates and returns signal correlations for a part."""
-    return calculate_signal_weights(part_code, db)
+def get_correlations(
+    part_code: str, 
+    exclude: str = Query(default=""), 
+    db: Session = Depends(get_db)
+):
+    """
+    Dynamically calculates and returns signal correlations for a part.
+    Accepts a comma-separated list of signals to exclude from the calculation.
+    """
+    # 1. Convert the comma-separated string from the URL into a Python list
+    # e.g., "battery_voltage_sag,short_trip_ratio" -> ["battery_voltage_sag", "short_trip_ratio"]
+    excluded_list = [s.strip() for s in exclude.split(",") if s.strip()] if exclude else []
+    
+    # 2. Pass the parsed list to your updated calculation function
+    return calculate_signal_weights(part_code, db, exclude=excluded_list)
 
 @router.post("/rules")
 def save_rule(rule: schemas.RuleCreate, db: Session = Depends(get_db)):
@@ -115,7 +128,7 @@ def get_saved_rule(part_code: str, db: Session = Depends(get_db)):
 
 @router.get("/rule-trend")
 def get_rule_trend(part_code: str, db: Session = Depends(get_db)):
-    """Return the last ten fleet-average scores for the active part rule."""
+    """Return the percentage of the fleet exceeding the alert threshold over the last ten weeks."""
     active_rules = db.query(models.RuleConfig).filter(
         models.RuleConfig.part_code == part_code.upper(),
         models.RuleConfig.is_included == True,
@@ -130,64 +143,50 @@ def get_rule_trend(part_code: str, db: Session = Depends(get_db)):
     model = train_part_model(part_code, selected_signals, db)
     if model is None:
         return []
+        
     rows = db.query(models.Telematics).order_by(
         models.Telematics.week_start_date.desc()
     ).all()
+    
     weekly_scores = {}
     for row in rows:
         values = pd.DataFrame([{
             signal: getattr(row, signal, 0.0)
             for signal in selected_signals
         }], columns=selected_signals)
-        probability = float(model.predict_proba(values)[0, 1]) * 100
+        
+        probability = float(model.predict_proba(values)[0, 1])
         weekly_scores.setdefault(row.week_start_date, []).append(probability)
 
-    return [
-        {
+    # Calculate the percentage of trucks over the alert threshold (e.g., 0.50 or your ALERT_THRESHOLD)
+    threshold = 0.50 
+    trend_results = []
+    
+    for week, scores in sorted(weekly_scores.items()):
+        total_trucks = len(scores)
+        if total_trucks == 0:
+            continue
+            
+        # Count how many trucks crossed the red line this week
+        at_risk_trucks = sum(1 for s in scores if s >= threshold)
+        
+        # Calculate percentage (0.0 to 1.0)
+        risk_ratio = at_risk_trucks / total_trucks
+        
+        trend_results.append({
             "week_start_date": week,
-            "probability": round(sum(scores) / len(scores), 2),
-        }
-        for week, scores in sorted(weekly_scores.items())[-10:]
-    ]
+            "probability": round(risk_ratio, 4),
+        })
 
+    return trend_results[-10:]
 @router.post("/backtest")
-def backtest_rule(payload: BacktestRequest):
+def backtest_rule(payload: BacktestRequest, db: Session = Depends(get_db)):
     """
     Step 4 of Rule Builder: Backtests the proposed formula against historical data.
     """
-    payload.part_code = payload.part_code.upper()
-    
-    # 1. Define the "ground truth" signals we mathematically injected in generate_data.py
-    critical_signals = {
-        "ALT-001": ["battery_voltage_sag", "coolant_temp_variance"],
-        "WP-002": ["coolant_temp_variance", "idle_time_pct"],
-        "TC-003": ["high_rpm_dwell_time", "oil_pressure_dips"]
-    }
-    
-    part_criticals = critical_signals.get(payload.part_code, [])
-    
-    # 2. Check if the user kept the critical signals in their custom rule
-    kept_criticals = sum(1 for sig in part_criticals if sig in payload.selected_signals)
-    total_criticals = len(part_criticals) if part_criticals else 1
-    
-    # Calculate an accuracy multiplier (1.0 if they kept everything, lower if they removed things)
-    accuracy_ratio = kept_criticals / total_criticals
-    
-    # 3. Generate the backtest metrics based on the formula's accuracy
-    # If they keep the top signals, it returns exactly what is shown in the UI mockup.
-    # If they uncheck a critical signal, the coverage and precision will realistically drop.
-    coverage = int(85 * accuracy_ratio) 
-    precision = int(74 * accuracy_ratio)
-    
-    # Since we injected synthetic failures 14-28 days out, the average alert is 21 days.
-    days_to_alert = 21 if accuracy_ratio > 0 else 0
-    
-    # Ensure metrics never drop completely to 0 to mimic real-world noise
-    final_precision = max(12, precision)
-    final_coverage = max(15, coverage)
-    
-    return {
-        "days_to_alert": days_to_alert,
-        "rule_precision_pct": final_precision,
-        "rule_coverage_pct": final_coverage
-    }
+    # Route the request directly into your genuine Machine Learning pipeline
+    return calculate_backtest(
+        part_code=payload.part_code,
+        selected_signals=payload.selected_signals,
+        db=db
+    )

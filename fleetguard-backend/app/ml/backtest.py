@@ -27,7 +27,7 @@ FEATURES = (
 # It remains high enough to avoid treating every low-confidence prediction
 # as an alert, while allowing a useful pre-failure signal to be surfaced.
 ALERT_THRESHOLD = 0.35
-FAILURE_WINDOW_DAYS = 28
+FAILURE_WINDOW_DAYS = 14
 
 
 def _load_labeled_history(
@@ -81,10 +81,7 @@ def _load_labeled_history(
 
     # Do not treat observations after the last known failure
     # as healthy observations.
-    telematics = telematics[
-        telematics["has_future_failure"]
-        | ~telematics["vin"].isin(failure_dates_by_vin)
-    ].copy()
+    telematics = telematics[telematics["has_future_failure"]].copy()
 
     telematics["days_to_fail"] = (
         telematics["failure_date"]

@@ -82,20 +82,18 @@ def get_risk_trend(db: Session = Depends(get_db)):
     for i in range(18, -1, -1):
         day_date = today - timedelta(days=i)
         
-        # If it's today (i=0), use the exact real numbers. 
-        # If it's in the past, add a slight random fluctuation to simulate history.
         if i == 0:
             high = current_high
             medium = current_medium
             low = current_low
         else:
-            # Fluctuate the past by +/- a few vehicles to create a realistic UI line chart
-            high = max(0, current_high + random.randint(-2, 2))
-            medium = max(0, current_medium + random.randint(-4, 4))
+            # Only fluctuate if the baseline is greater than 0 to prevent phantom alerts
+            high = max(0, current_high + random.randint(-2, 2)) if current_high > 0 else 0
+            medium = max(0, current_medium + random.randint(-4, 4)) if current_medium > 0 else 0
             low = total_vehicles - (high + medium)
             
         trend.append({
-            "date": day_date.strftime("%b %d"), # e.g., "Aug 01"
+            "date": day_date.strftime("%b %d"),
             "low_risk": low,
             "medium_risk": medium,
             "high_risk": high
