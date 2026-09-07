@@ -172,29 +172,13 @@ def run_fleet_scoring(db: Session):
             alpha = 1.0 + stress_factors
 
             p_fail = probability_pct / 100.0
-
+            current_part_km = v_data.total_km % p_data.design_life_km
+            base_remaining_km = p_data.design_life_km - current_part_km
             # RUL Formula:
             # (Design Life - Current Odometer)
             # / (1 + (alpha * p_fail))
-            current_part_km = (
-                v_data.total_km
-                % p_data.design_life_km
-            )
 
-            base_remaining_km = (
-                p_data.design_life_km
-                - current_part_km
-            )
-
-            denominator = (
-                1.0
-                + (alpha * p_fail)
-            )
-
-            raw_rul = (
-                base_remaining_km
-                / denominator
-            )
+            raw_rul = (base_remaining_km * (1.0 - p_fail)) / alpha
 
             # RUL can never be negative
             final_rul = max(

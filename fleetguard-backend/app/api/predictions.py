@@ -121,50 +121,51 @@ def get_ranked_predictions(sort: str = "desc", db: Session = Depends(get_db)):
 
     return response
 
+
 @router.get("/trend/{vin}")
 def get_probability_trend(vin: str, part_code: str, db: Session = Depends(get_db)):
-    """Calculates the 12-week probability trend for a specific vehicle (Requirement 4.3)."""
+    """Calculates the 12-week probability trend matching the fleet scoring engine exactly."""
     vin = vin.upper()
-    
-    # 1. Get the active rule for this part
+
     active_rules = db.query(models.RuleConfig).filter(
         models.RuleConfig.part_code == part_code, 
         models.RuleConfig.is_included == True
     ).all()
-    
+
     if not active_rules:
         return []
-        
-    selected_signals = [
-        r.signal_name for r in active_rules if r.signal_name in FEATURES
-    ]
+
+    selected_signals = [r.signal_name for r in active_rules if r.signal_name in FEATURES]
     model = train_part_model(part_code, selected_signals, db)
+    
     if model is None:
         return []
-    
-    # 2. Get the last 12 weeks of telematics for this VIN, ordered chronologically
+
     history = db.query(models.Telematics).filter(models.Telematics.vin == vin)\
         .order_by(models.Telematics.week_start_date.desc()).limit(12).all()
-        
-    history.reverse() # Reverse to go from oldest (12 weeks ago) to newest (today)
-    
-    # 3. Apply the rule to each week to generate the trend
+
+    if not history:
+        return []
+
+    history.reverse() # Reverse to go from oldest to newest
+
     trend = []
     for record in history:
+        # ✨ REVERTED: Back to raw weekly data so it perfectly matches run_fleet_scoring()
         values = pd.DataFrame([{
             signal: getattr(record, signal, 0.0)
             for signal in selected_signals
         }], columns=selected_signals)
-        prob_pct = round(
-            float(model.predict_proba(values)[0, 1]) * 100,
-            2,
-        )
+        
+        prob_pct = round(float(model.predict_proba(values)[0, 1]) * 100, 2)
+        
         trend.append({
             "week_start_date": record.week_start_date,
             "probability": prob_pct
         })
-        
+
     return trend
+
 @router.get("/{vin}/signal-breakdown")
 def get_signal_breakdown(vin: str, part_code: str, db: Session = Depends(get_db)):
     """
