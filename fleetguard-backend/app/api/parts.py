@@ -16,25 +16,21 @@ def get_all_parts(db: Session = Depends(get_db)):
     """
     parts = db.query(models.Part).all()
     
-    # Map our specific parts to their UI categories AND human-readable descriptions
-    part_mapping = {
-        "ALT-001": {"category": "Battery & Charging", "name": "Alternator"},
-        "WP-002": {"category": "Cooling System", "name": "Water Pump"},
-        "TC-003": {"category": "Powertrain", "name": "Turbocharger"}
-    }
-    
     response = {}
     for p in parts:
-        # Fallback to Uncategorized if a new part is ever added to the DB
-        mapping = part_mapping.get(p.part_code, {"category": "Uncategorized", "name": p.part_code})
-        cat = mapping["category"]
+        # Pull category straight from the DB. 
+        # If a DB row has a blank/null category, safely fall back to "Uncategorized"
+        cat = p.category if p.category else "Uncategorized"
         
         if cat not in response:
             response[cat] = []
             
         response[cat].append({
             "part_code": p.part_code,
-            "description": mapping["name"], # Using the mapped name instead of a DB column
+            "part_name": p.part_name,
+            # Pull description directly from the DB. 
+            # If it's missing, fall back to the raw part code so the UI doesn't crash.
+            #"description": p.description if p.description else p.part_code, 
             "design_life_km": p.design_life_km
         })
         

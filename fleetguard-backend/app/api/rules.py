@@ -128,7 +128,7 @@ def get_saved_rule(part_code: str, db: Session = Depends(get_db)):
 
 @router.get("/rule-trend")
 def get_rule_trend(part_code: str, db: Session = Depends(get_db)):
-    """Return the last ten fleet-average scores for the active part rule."""
+    """Return the percentage of the fleet exceeding the alert threshold over the last ten weeks."""
     active_rules = db.query(models.RuleConfig).filter(
         models.RuleConfig.part_code == part_code.upper(),
         models.RuleConfig.is_included == True,
@@ -143,26 +143,42 @@ def get_rule_trend(part_code: str, db: Session = Depends(get_db)):
     model = train_part_model(part_code, selected_signals, db)
     if model is None:
         return []
+        
     rows = db.query(models.Telematics).order_by(
         models.Telematics.week_start_date.desc()
     ).all()
+    
     weekly_scores = {}
     for row in rows:
         values = pd.DataFrame([{
             signal: getattr(row, signal, 0.0)
             for signal in selected_signals
         }], columns=selected_signals)
-        probability = float(model.predict_proba(values)[0, 1]) * 100
+        
+        probability = float(model.predict_proba(values)[0, 1])
         weekly_scores.setdefault(row.week_start_date, []).append(probability)
 
-    return [
-        {
+    # Calculate the percentage of trucks over the alert threshold (e.g., 0.50 or your ALERT_THRESHOLD)
+    threshold = 0.50 
+    trend_results = []
+    
+    for week, scores in sorted(weekly_scores.items()):
+        total_trucks = len(scores)
+        if total_trucks == 0:
+            continue
+            
+        # Count how many trucks crossed the red line this week
+        at_risk_trucks = sum(1 for s in scores if s >= threshold)
+        
+        # Calculate percentage (0.0 to 1.0)
+        risk_ratio = at_risk_trucks / total_trucks
+        
+        trend_results.append({
             "week_start_date": week,
-            "probability": round(sum(scores) / len(scores), 2),
-        }
-        for week, scores in sorted(weekly_scores.items())[-10:]
-    ]
+            "probability": round(risk_ratio, 4),
+        })
 
+    return trend_results[-10:]
 @router.post("/backtest")
 def backtest_rule(payload: BacktestRequest, db: Session = Depends(get_db)):
     """
