@@ -1,8 +1,9 @@
 import random
 import numpy as np
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta
 from app.database import SessionLocal, engine
 from app import models
+import math
 
 # Fixed random seed for reproducible datasets
 RANDOM_SEED = 42
@@ -10,6 +11,35 @@ NUM_VEHICLES = 500
 
 random.seed(RANDOM_SEED)
 np.random.seed(RANDOM_SEED)
+
+# 1. Real-world mechanical failure profiles mapped strictly to your 9 DB columns
+FAILURE_PROFILES = {
+    "ALT-001": { # Alternator
+        "root": ["short_trip_ratio"], 
+        "early": ["high_rpm_dwell_time"], 
+        "critical": ["battery_voltage_sag"]
+    },
+    "WP-002": { # Water Pump
+        "root": ["idle_time_pct"], 
+        "early": ["coolant_temp_variance"], 
+        "critical": ["dtc_recurrence_rate"]
+    },
+    "TC-003": { # Turbocharger
+        "root": ["overload_duty_share"], 
+        "early": ["high_rpm_dwell_time"], 
+        "critical": ["oil_pressure_dips"]
+    },
+    "BP-004": { # Brake Pads
+        "root": ["short_trip_ratio"], 
+        "early": ["harsh_braking_frequency"], 
+        "critical": ["dtc_recurrence_rate"]
+    },
+    "GB-005": { # Gearbox
+        "root": ["overload_duty_share"], 
+        "early": ["harsh_braking_frequency", "idle_time_pct"], 
+        "critical": ["dtc_recurrence_rate"]
+    }
+}
 
 def generate_parts(db):
     print("Generating Parts...")
@@ -76,7 +106,7 @@ def generate_job_cards(db, vehicles, parts):
     return job_cards
 
 def generate_telematics(db, vehicles, job_cards):
-    print("Generating 52 Weeks of Telematics with Intentional Signals...")
+    print("Generating 52 Weeks of Telematics with Tiered Degradation...")
     db.query(models.Telematics).delete()
     
     failure_map = {}
@@ -98,53 +128,64 @@ def generate_telematics(db, vehicles, job_cards):
         for week_offset in range(52):
             week_date = today - timedelta(days=(week_offset * 7))
             
-            # Base Normal Signals (Healthy)
-            coolant = np.clip(np.random.normal(0.2, 0.05), 0, 1)
-            oil_dips = max(0, int(np.random.normal(1, 1)))
-            voltage_sag = np.clip(np.random.normal(0.1, 0.05), 0, 1)
-            dtc = np.clip(np.random.normal(0.05, 0.02), 0, 1)
-            braking = np.clip(np.random.normal(0.15, 0.05), 0, 1)
-            overload = np.clip(np.random.normal(0.1, 0.1), 0, 1)
-            rpm_dwell = np.clip(np.random.normal(0.2, 0.05), 0, 1)
-            short_trip = np.clip(np.random.normal(0.3, 0.1), 0, 1)
-            idle = np.clip(np.random.normal(0.15, 0.05), 0, 1)
+            # Base Normal Signals (Healthy Dictionary)
+            signals = {
+                "coolant_temp_variance": float(np.clip(np.random.normal(0.2, 0.05), 0, 1)),
+                "oil_pressure_dips": max(0, int(np.random.normal(1, 1))),
+                "battery_voltage_sag": float(np.clip(np.random.normal(0.1, 0.05), 0, 1)),
+                "dtc_recurrence_rate": float(np.clip(np.random.normal(0.05, 0.02), 0, 1)),
+                "harsh_braking_frequency": float(np.clip(np.random.normal(0.15, 0.05), 0, 1)),
+                "overload_duty_share": float(np.clip(np.random.normal(0.1, 0.1), 0, 1)),
+                "high_rpm_dwell_time": float(np.clip(np.random.normal(0.2, 0.05), 0, 1)),
+                "short_trip_ratio": float(np.clip(np.random.normal(0.3, 0.1), 0, 1)),
+                "idle_time_pct": float(np.clip(np.random.normal(0.15, 0.05), 0, 1))
+            }
             
-            # Helper to spike specific signals based on the failing part
-            def apply_degradation(part_code, severity_multiplier):
-                nonlocal voltage_sag, rpm_dwell, coolant, idle, oil_dips, short_trip, braking, overload
-                if part_code == "ALT-001":
-                    voltage_sag = np.clip(np.random.normal(0.8 * severity_multiplier, 0.1), 0, 1)
-                    rpm_dwell = np.clip(np.random.normal(0.7 * severity_multiplier, 0.1), 0, 1)
-                elif part_code == "WP-002":
-                    coolant = np.clip(np.random.normal(0.9 * severity_multiplier, 0.05), 0, 1)
-                    idle = np.clip(np.random.normal(0.8 * severity_multiplier, 0.1), 0, 1)
-                elif part_code == "TC-003":
-                    oil_dips = max(3, int(np.random.normal(10 * severity_multiplier, 2)))
-                    short_trip = np.clip(np.random.normal(0.75 * severity_multiplier, 0.1), 0, 1)
-                elif part_code == "BP-004":
-                    braking = np.clip(np.random.normal(0.85 * severity_multiplier, 0.1), 0, 1)
-                    short_trip = np.clip(np.random.normal(0.6 * severity_multiplier, 0.1), 0, 1)
-                elif part_code == "GB-005":
-                    overload = np.clip(np.random.normal(0.9 * severity_multiplier, 0.1), 0, 1)
-                    rpm_dwell = np.clip(np.random.normal(0.8 * severity_multiplier, 0.1), 0, 1)
+            # Helper to mathematically compound signals based on distance to failure
+            def apply_tiered_degradation(part_code, weeks_until_failure):
+                profile = FAILURE_PROFILES.get(part_code, {})
+                
+                # Tier 1: Root Causes (Chronically 30-50% higher across all 52 weeks)
+                for sig in profile.get("root", []):
+                    if isinstance(signals[sig], int):
+                        signals[sig] += int(signals[sig] * random.uniform(0.3, 0.5))
+                    else:
+                        signals[sig] = min(1.0, signals[sig] * random.uniform(1.3, 1.5))
+                        
+                # Tier 2: Early Warnings (Gradual linear climb starting 15 weeks out)
+                if weeks_until_failure <= 15:
+                    multiplier = 1 + ((15 - weeks_until_failure) * 0.05)
+                    for sig in profile.get("early", []):
+                        if isinstance(signals[sig], int):
+                            signals[sig] = int(signals[sig] * multiplier)
+                        else:
+                            signals[sig] = min(1.0, signals[sig] * multiplier)
+                            
+                # Tier 3: Critical Symptoms (Exponential spike in the final 4 weeks)
+                if weeks_until_failure <= 4:
+                    spike_factor = math.exp(5 - weeks_until_failure) 
+                    for sig in profile.get("critical", []):
+                        if sig == "oil_pressure_dips":
+                            signals[sig] += int(spike_factor) # Add integer dips
+                        else:
+                            signals[sig] = min(1.0, signals[sig] + (spike_factor * 0.005))
 
-            # Inject Historical Failure Spikes (14-28 days prior to past failure)
+            # Inject Historical Failure Spikes (Iterate past job cards)
             for jc in v_failures:
                 days_until_failure = (jc.failure_date - week_date).days
-                if 0 <= days_until_failure <= 28:
-                    apply_degradation(jc.part_code, 1.0)
+                if 0 <= days_until_failure <= 365:
+                    weeks_until = days_until_failure // 7
+                    apply_tiered_degradation(jc.part_code, weeks_until)
                         
-            # Inject Active Imminent Failure Spikes (Gets worse closer to today)
-            if active_failing_part and week_offset <= 4:
-                severity = 1.0 - (week_offset * 0.15) # Today is 1.0, 4 weeks ago is 0.4
-                apply_degradation(active_failing_part, severity)
+            # Inject Active Imminent Failure Spikes
+            if active_failing_part:
+                # week_offset acts exactly as weeks_until_failure (0 = failing this week)
+                apply_tiered_degradation(active_failing_part, week_offset)
                         
             telematics_records.append(models.Telematics(
-                vin=v.vin, week_start_date=week_date, coolant_temp_variance=float(coolant),
-                oil_pressure_dips=int(oil_dips), battery_voltage_sag=float(voltage_sag),
-                dtc_recurrence_rate=float(dtc), harsh_braking_frequency=float(braking),
-                overload_duty_share=float(overload), high_rpm_dwell_time=float(rpm_dwell),
-                short_trip_ratio=float(short_trip), idle_time_pct=float(idle)
+                vin=v.vin, 
+                week_start_date=week_date, 
+                **signals
             ))
             
         if len(telematics_records) > 10000:
@@ -156,7 +197,7 @@ def generate_telematics(db, vehicles, job_cards):
         db.add_all(telematics_records)
         db.commit()
         
-    print(f"-> Generated {NUM_VEHICLES * 52} telematics records successfully.")
+    print(f"-> Generated {NUM_VEHICLES * 52} tiered telematics records successfully.")
 
 
 def main():
@@ -167,7 +208,7 @@ def main():
         vehicles = generate_vehicles(db)
         job_cards = generate_job_cards(db, vehicles, parts)
         generate_telematics(db, vehicles, job_cards)
-        print("\nSuccess: Fully synthetic 500-vehicle dataset injected and ready for Developer B!")
+        print("\nSuccess: Fully synthetic tiered 500-vehicle dataset injected and ready for ML Analysis!")
     finally:
         db.close()
 

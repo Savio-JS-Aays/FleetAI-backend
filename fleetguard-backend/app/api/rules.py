@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends
+
+from fastapi import Query, APIRouter, Depends
 from sqlalchemy.orm import Session
 from app.database import get_db
 import pandas as pd
@@ -78,9 +79,21 @@ def run_prediction_engine_for_part(part_code: str, db: Session):
 
 
 @router.get("/correlations")
-def get_correlations(part_code: str, db: Session = Depends(get_db)):
-    """Dynamically calculates and returns signal correlations for a part."""
-    return calculate_signal_weights(part_code, db)
+def get_correlations(
+    part_code: str, 
+    exclude: str = Query(default=""), 
+    db: Session = Depends(get_db)
+):
+    """
+    Dynamically calculates and returns signal correlations for a part.
+    Accepts a comma-separated list of signals to exclude from the calculation.
+    """
+    # 1. Convert the comma-separated string from the URL into a Python list
+    # e.g., "battery_voltage_sag,short_trip_ratio" -> ["battery_voltage_sag", "short_trip_ratio"]
+    excluded_list = [s.strip() for s in exclude.split(",") if s.strip()] if exclude else []
+    
+    # 2. Pass the parsed list to your updated calculation function
+    return calculate_signal_weights(part_code, db, exclude=excluded_list)
 
 @router.post("/rules")
 def save_rule(rule: schemas.RuleCreate, db: Session = Depends(get_db)):
