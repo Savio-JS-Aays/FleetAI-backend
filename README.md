@@ -1,222 +1,210 @@
-Create a **rudimentary initial `README.md`** for the FleetGuard AI project.
-
-The README is intended to be a **living project document** that will be updated throughout development. Do not try to make it a complete technical document at this stage.
-
-Use the FleetGuard AI project context provided in this conversation as the source of truth.
-
-## Objective
-
-Create a clean, concise, developer-friendly README that allows a new contributor to understand:
-
-* What FleetGuard AI is
-* What the project is trying to achieve
-* The high-level architecture
-* The main components
-* The current technology stack
-* The repository structure
-* The current development status
-* Basic setup placeholders
-* The two developer roles
-* The current roadmap
-
-## Important
-
-This is an **initial/rudimentary README**.
-
-Do NOT:
-
-* Invent finalized API endpoints.
-* Invent finalized database schemas.
-* Invent commands that have not yet been established.
-* Invent environment variables that may change.
-* Document implementation details that are not finalized.
-* Add unnecessary badges, marketing content, or excessive documentation.
-* Duplicate the complete Software Design Document.
-* Pretend unfinished features are implemented.
-
-Where implementation details are not yet finalized, use clear placeholders such as:
-
-```text
-[TBD]
-```
-
-or:
-
-```text
-<!-- TODO: Update when implementation is finalized -->
-```
-
-The README should be easy to update later.
-
----
-
-# Required README Structure
-
-Create the following sections.
-
-## 1. Project Title
-
-Use:
-
 # FleetGuard AI
-
-Include a one-line description:
 
 > Predictive Failure Engine and Agentic AI Assistant for Commercial Vehicle Fleets
 
----
+FleetGuard AI is a predictive maintenance platform for commercial fleets. It combines synthetic telematics and failure history, applies correlative risk analysis, and exposes actionable vehicle health signals through a backend API and AI assistant.
 
-## 2. Overview
+## Overview
 
-Briefly explain:
+Modern fleet operations generate large volumes of telematics signals, but they rarely surface the leading indicators of component failure early enough to act. FleetGuard AI addresses that gap by modeling historical failure patterns and live vehicle behavior to estimate:
 
-* What FleetGuard AI does.
-* The problem it addresses.
-* How telematics and historical failure data are used.
-* How failure probability and RUL are generated.
-* How the dashboard and AI assistant expose the results.
+- failure probability for critical parts
+- risk tiers and precursor signals
+- remaining useful life (RUL)
+- fleet-wide risk trends
+- natural-language insights grounded in the backend data
 
-Keep this section concise.
+The platform is designed to support operational teams and decision makers with clear, data-backed outputs rather than opaque model scores alone.
 
----
+## What the project is building
 
-## 3. Project Goals
+FleetGuard AI helps teams:
 
-List the major goals:
+- generate synthetic fleet data for testing and modeling
+- analyze component-level failure correlations
+- score vehicles and parts using telemetry patterns
+- classify risk levels and prioritize intervention
+- estimate remaining useful life for high-risk components
+- expose results through a dashboard and AI-driven assistant
 
-* Synthetic fleet data generation
-* Failure correlation analysis
-* Part-specific scoring rules
-* Failure probability prediction
-* Risk classification
-* Remaining Useful Life estimation
-* Interactive fleet dashboard
-* Grounded Agentic AI assistant
+## Architecture
 
----
-
-## 4. High-Level Architecture
-
-Include a simple Mermaid diagram if appropriate.
-
-Use the conceptual flow:
-
-```text
-Synthetic Data
-      ↓
-Database
-      ↓
-ML / Scoring Engine
-      ↓
-Failure Probability + RUL
-      ↓
-FastAPI Backend
-      ↓
-React Dashboard
-      ↓
-Agentic AI
+```mermaid
+flowchart LR
+    A[Synthetic Fleet Data] --> B[(Database)]
+    B --> C[ML / Scoring Engine]
+    C --> D[Failure Probability + RUL]
+    D --> E[FastAPI Backend]
+    E --> F[Dashboard]
+    E --> G[Agentic AI Assistant]
 ```
 
-Do not add components that have not been established.
-
----
-
-## 5. Project Components
-
-Briefly describe:
+## Core components
 
 ### Backend
+The backend is the control plane for the platform. It handles data generation, persistence, prediction logic, RUL calculations, and the API layer that powers the rest of the application.
 
-Responsible for:
-
-* Data generation
-* Database
-* ML/scoring
-* RUL
-* APIs
-* Agent tools
-
-### Frontend
-
-Responsible for:
-
-* Dashboard
-* Rule Builder
-* Failure Probability
-* RUL Explorer
-* AI chat
+### ML and scoring engine
+The scoring engine evaluates component-specific rules based on live telematics data and historical failure signatures. It outputs failure probability, risk classification, and a ranked list of precursor signals.
 
 ### Agentic AI
+The AI layer is grounded to backend tools and returns responses only from validated fleet data. This keeps answers interpretable and prevents speculative or fabricated fleet insights.
 
-Responsible for:
+## Technology stack
 
-* Natural-language queries
-* Backend tool calling
-* Grounded responses
+| Layer | Technology | Status |
+| --- | --- | --- |
+| Backend | Python, FastAPI | Active |
+| Database | SQLAlchemy, SQLite | Active |
+| ML | pandas, scikit-learn | Active |
+| AI | Google Gemini via GenAI SDK | Active |
+| Frontend | React + Tailwind CSS | Planned |
 
-Keep these descriptions short.
-
----
-
-## 6. Technology Stack
-
-Create a simple table:
-
-| Layer    | Technology                      | Status |
-| -------- | ------------------------------- | ------ |
-| Backend  | Python / FastAPI                | TBD    |
-| Database | SQLite / PostgreSQL             | TBD    |
-| ML       | pandas / scikit-learn / XGBoost | TBD    |
-| Frontend | React / Tailwind CSS            | TBD    |
-| AI       | LLM with tool calling           | TBD    |
-
-Only include technologies already established in the project context.
-
-Mark technologies as `TBD` where the final choice has not yet been made.
-
----
-
-## 7. Repository Structure
-
-Provide a **proposed** high-level structure such as:
+## Repository structure
 
 ```text
-fleetguard-ai/
-├── backend/
-├── frontend/
-├── docs/
-└── README.md
+Fleet AI backend/
+├── fleetguard-backend/
+│   ├── app/
+│   │   ├── api/
+│   │   ├── ml/
+│   │   ├── database.py
+│   │   ├── main.py
+│   │   ├── models.py
+│   │   └── schemas.py
+│   ├── generate_data.py
+│   ├── clean_db.py
+│   ├── requirements.txt
+│   ├── test_agent.py
+│   └── README.md
+├── README.md
+└── .gitignore
 ```
 
-Clearly label this as a proposed/current structure and do not invent detailed files that may not exist yet.
+## Feature set
 
-Add:
+- Synthetic fleet data generation
+- Failure correlation and rule evaluation
+- Part-specific risk scoring
+- Probability-based failure classification
+- Remaining useful life estimation
+- Fleet-level summary and drilldown analysis
+- Grounded natural-language assistant for fleet questions
+- Dashboard-ready API responses
+
+## Current project status
+
+This project is in active development. The backend already includes:
+
+- synthetic fleet and failure generation
+- SQLAlchemy models for vehicles, parts, telematics, rules, and predictions
+- ML scoring and risk logic
+- FastAPI endpoints for fleet summary, predictions, and AI tools
+- a Gemini-backed chat assistant with grounded tool usage
+
+Planned next steps include:
+
+- frontend dashboard polish
+- richer rule management and UX flows
+- expanded analytics and comparison views
+- production-grade deployment configuration
+
+## Getting started
+
+### Prerequisites
+
+- Python 3.10+
+- pip
+- virtual environment support
+
+### 1. Clone the repository
+
+```bash
+git clone <repository-url>
+cd "Fleet AI backend"
+```
+
+### 2. Set up the backend environment
+
+```bash
+cd fleetguard-backend
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 3. Configure environment variables
+
+Create a `.env` file in `fleetguard-backend/`:
+
+```env
+GEMINI_API_KEY=your_google_gemini_api_key
+```
+
+### 4. Generate the synthetic fleet dataset
+
+```bash
+python generate_data.py
+```
+
+### 5. Start the API
+
+```bash
+uvicorn app.main:app --reload
+```
+
+The app will be available at:
+
+- http://127.0.0.1:8000
+- health check: http://127.0.0.1:8000/api/health
+
+## API and project flow
+
+The backend exposes endpoints for:
+
+- fleet summaries and risk trends
+- vehicle and part analysis
+- prediction outputs
+- top precursor signals
+- AI tool access and chat requests
+
+The general flow is:
 
 ```text
-<!-- TODO: Update this section as the repository structure evolves. -->
+Synthetic data -> database -> ML scoring -> prediction outputs -> FastAPI -> dashboard / assistant
 ```
 
----
+## Roadmap
 
-## 8. Core Features
+### Near term
+- harden the scoring model behavior and thresholds
+- expose more fleet insights through the API
+- refine AI tool grounding and response quality
 
-Create a concise list of the major features:
+### Medium term
+- add frontend dashboard interactions
+- add rule builder and scenario tuning
+- improve visualization of risk and RUL trends
 
-* Synthetic Data Engine
-* Failure Correlation & Rule Builder
-* Failure Probability Engine
-* RUL Estimator
-* Executive Dashboard
-* Failure Probability Dashboard
-* RUL Explorer
-* Insight Agent
-* Action Agent — Optional / Stretch
+### Longer term
+- production-ready deployment pipeline
+- richer fleet analytics and alerting
+- operational workflow automation and action recommendations
 
-Do not provide detailed implementation instructions here.
+## Project roles
 
----
+This project is best understood as a collaboration between:
 
-## 9. Development Setup
+- Data / ML engineer: synthetic data, feature analysis, probability scoring, failure logic
+- Product / operations engineer: dashboard experience, risk decisioning, AI workflow UX
+
+## License
+
+This project is currently under active development and has not yet been assigned a formal public license.
+
+## Notes
+
+FleetGuard AI is intentionally built to surface realistic maintenance insight from synthetic operational data while keeping the system grounded in backend-generated facts. The AI assistant is designed to answer queries using the platform’s actual fleet data instead of free-form speculation.
 
 Create a minimal setup section.
 
