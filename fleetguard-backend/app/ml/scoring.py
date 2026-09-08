@@ -178,13 +178,23 @@ def run_fleet_scoring(db: Session):
             # (Design Life - Current Odometer)
             # / (1 + (alpha * p_fail))
 
-            raw_rul = (base_remaining_km * (1.0 - p_fail)) / alpha
-
-            # RUL can never be negative
-            final_rul = max(
-                0,
-                int(raw_rul)
-            )
+            # ✨ THE FIX: removed the duplicate, unconditional
+            # `final_rul = max(0, int(raw_rul))` that used to sit here.
+            # It ran on every iteration regardless of branch, so a
+            # Red-tier part (probability_pct >= 70.0) that correctly
+            # got final_rul = 0 above was then immediately overwritten
+            # with whatever `raw_rul` happened to be left over from a
+            # *previous* VIN/part in this loop (Python for-loops don't
+            # reset local variables between iterations) — producing
+            # exactly the "100% failure probability but a long RUL"
+            # symptom, non-deterministically, depending on iteration
+            # order. Each branch now fully owns its own final_rul with
+            # no code after the if/else able to clobber it.
+            if probability_pct >= 70.0:
+                final_rul = 0
+            else:
+                raw_rul = (base_remaining_km * (1.0 - p_fail)) / alpha
+                final_rul = max(0, int(raw_rul))
 
             # --- Create Prediction ---
             predictions.append(
