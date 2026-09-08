@@ -8,6 +8,7 @@ from app.ml.scoring import run_fleet_scoring
 from app.ml.correlation import FEATURES, train_part_model
 from app.api.rul import calculate_rul_days
 from fastapi import HTTPException
+from sqlalchemy import func
 
 router = APIRouter(prefix="/api/predictions", tags=["Predictions"])
 
@@ -21,6 +22,13 @@ def trigger_batch_scoring(db: Session = Depends(get_db)):
 def get_ranked_predictions(sort: str = "desc", db: Session = Depends(get_db)):
     """Returns all fleet predictions ranked by failure probability."""
 
+    # ✨ THE FIX: Create a subquery to find the newest prediction_id for every VIN + Part combo
+    latest_predictions_subq = (
+        db.query(func.max(models.Prediction.prediction_id).label("latest_id"))
+        .group_by(models.Prediction.vin, models.Prediction.part_code)
+        .subquery()
+    )
+
     query = (
         db.query(models.Prediction, models.Vehicle, models.Part)
         .join(
@@ -30,6 +38,11 @@ def get_ranked_predictions(sort: str = "desc", db: Session = Depends(get_db)):
         .join(
             models.Part,
             models.Prediction.part_code == models.Part.part_code
+        )
+        # ✨ THE FIX: Inner join on our subquery to filter out all historical/zombie rows
+        .join(
+            latest_predictions_subq,
+            models.Prediction.prediction_id == latest_predictions_subq.c.latest_id
         )
     )
 
@@ -51,28 +64,13 @@ def get_ranked_predictions(sort: str = "desc", db: Session = Depends(get_db)):
 
     response = []
 
-    # Return EVERY prediction record.
-    # Do NOT collapse multiple parts belonging to the same VIN.
+    # Return EVERY prediction record (but now it's only the newest ones!)
     for p, v, part in predictions:
 
         # Safely format values coming from the database
-        vehicle_name = (
-            v.model
-            if v.model
-            else "Unknown vehicle"
-        )
-
-        region = (
-            v.region
-            if v.region
-            else "Unknown region"
-        )
-
-        component_name = (
-            part.part_name
-            if part.part_name
-            else p.part_code
-        )
+        vehicle_name = v.model if v.model else "Unknown vehicle"
+        region = v.region if v.region else "Unknown region"
+        component_name = part.part_name if part.part_name else p.part_code
 
         probability = (
             round(float(p.failure_probability_pct), 1)
@@ -80,30 +78,16 @@ def get_ranked_predictions(sort: str = "desc", db: Session = Depends(get_db)):
             else 0
         )
 
-        rul = (
-            p.rul_km
-            if p.rul_km is not None
-            else 0
-        )
+        rul = p.rul_km if p.rul_km is not None else 0
         rul_days, _ = calculate_rul_days(p, v)
-
-        risk = (
-            p.risk_tier.lower()
-            if p.risk_tier
-            else "green"
-        )
+        risk = p.risk_tier.lower() if p.risk_tier else "green"
 
         response.append(
             {
                 "vin": v.vin,
-
                 # Vehicle information
                 "vehicle": vehicle_name,
-                "miles": (
-                    f"{v.total_km:,} km"
-                    if v.total_km is not None
-                    else "—"
-                ),
+                "miles": f"{v.total_km:,} km" if v.total_km is not None else "—",
                 "fleet": "Fleet Operations",
                 "region": region,
 
@@ -120,7 +104,6 @@ def get_ranked_predictions(sort: str = "desc", db: Session = Depends(get_db)):
         )
 
     return response
-
 
 @router.get("/trend/{vin}")
 def get_probability_trend(vin: str, part_code: str, db: Session = Depends(get_db)):
